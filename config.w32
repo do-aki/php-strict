@@ -1,0 +1,13 @@
+// $Id$
+// vim:ft=javascript
+
+// If your extension references something external, use ARG_WITH
+// ARG_WITH("strict", "for strict support", "no");
+
+// Otherwise, use ARG_ENABLE
+// ARG_ENABLE("strict", "enable strict support", "no");
+
+if (PHP_STRICT != "no") {
+	EXTENSION("strict", "strict.c");
+}
+
