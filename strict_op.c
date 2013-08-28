@@ -9,7 +9,7 @@
 #define STRICT_USE_ALL 3
 
 /* {{{ static const strict_op_info op_info[] */
-static const strict_op_info op_info[] = {
+const strict_op_info op_info[] = {
 		/*   0 */ {STRICT_IGNORE,  "ZEND_NOP"                            },
 		/*   1 */ {STRICT_USE_ALL, "ZEND_ADD"                            },
 		/*   2 */ {STRICT_USE_ALL, "ZEND_SUB"                            },
@@ -179,16 +179,74 @@ static const strict_op_info op_info[] = {
 /* }}} */
 #define MAX_OP_CODE 163
 
+/* {{{ util */
+typedef struct _file_cache {
+	char *filename;
+	char line[100][31];
+} file_cache;
+static file_cache _fc;
+
+const char *get_source_line(zend_op_array *opa, int position) {
+	FILE *fp;
+	static int init = 0;
+	if (init == 0) {
+		int i;
+		_fc.filename = NULL;
+		for(i=0;i<100;++i) { _fc.line[i][0] = 0; }
+		init = 1;
+	}
+
+	if (_fc.filename == NULL || strcmp(opa->filename, _fc.filename) != 0) {
+		char buf[1025];
+		int line_no = 0;
+
+		_fc.filename = opa->filename;
+		fp = fopen(_fc.filename, "r");
+		while(fgets(buf, 1024, fp) != NULL) { // とりあえず、メンドイので 1行は1024byte 未満とする
+			buf[1024] = 0; // safety
+			buf[strlen(buf)-1] = 0; // remove \n
+			strncpy(_fc.line[line_no], buf, 30);
+			_fc.line[line_no][30] = 0; // safety
+			++line_no;
+		}
+		fclose(fp);
+
+	}
+
+	if (opa->opcodes[position].lineno <= 100) {
+		return _fc.line[opa->opcodes[position].lineno-1];
+	}
+	return NULL;
+}
+
+const char *get_opcode_name(zend_uchar opcode) {
+	if (MAX_OP_CODE < opcode) {
+		return NULL;
+	}
+
+	return op_info[opcode].name;
+}
+
+/* }}} */
+
 
 /* {{{ assigned_map */
 typedef struct _assigned_map {
 	unsigned int size;
 	int *current;
+
+	int exjmp_pos;
+	zend_uchar exjmp[100];
+
+	int stash_pos;
+	int *stash[100];
+
 	int stack_pos;
 	struct {
 		int position;
 		int* map;
 	} stack[100];
+
 } assigned_map;
 
 assigned_map *create_assigned_map(unsigned int size) {
@@ -196,6 +254,7 @@ assigned_map *create_assigned_map(unsigned int size) {
 	am->size = size;
 	am->current = calloc(sizeof(int), size);
 	am->stack_pos = 0;
+	am->stash_pos = 0;
 	return am;
 }
 
@@ -227,6 +286,56 @@ int pop_assigned_map(assigned_map *am) {
 	return am->stack[am->stack_pos].position;
 }
 
+int replace_assigned_map(assigned_map *am, int position) {
+	int pos;
+	if (am->stack_pos <= 0) {
+		return -1;
+	}
+
+	memcpy(am->current, am->stack[am->stack_pos-1].map, sizeof(int) * am->size);
+	pos = am->stack[am->stack_pos-1].position;
+
+	am->stack[am->stack_pos-1].position = position;
+	return pos;
+}
+
+void stack_exjmp_assigned_map(assigned_map *am, zend_uchar op) {
+	am->exjmp[am->exjmp_pos++] = op;
+}
+
+zend_uchar pop_exjmp_assigned_map(assigned_map *am) {
+	if (am->exjmp_pos <= 0) {
+		return 0;
+	}
+
+	return am->exjmp[--am->exjmp_pos];
+}
+
+
+int pop_and_stash_assigned_map(assigned_map *am) {
+	int position = pop_assigned_map(am);
+
+	am->stash[am->stash_pos] = malloc(sizeof(int) * am->size);
+	memcpy(am->stash[am->stash_pos], am->current, sizeof(int) * am->size);
+	++am->stash_pos;
+
+	return position;
+}
+
+int exists_stash(assigned_map *am) {
+	return (0 < am->stash_pos);
+}
+
+void restore_stash(assigned_map *am) {
+	if (am->stash_pos == 0) {
+		abort();
+	}
+
+	free(am->current);
+	am->current = am->stash[--am->stash_pos];
+}
+
+
 int get_stacked_position(assigned_map *am) {
 	return (0 < am->stack_pos) ?
 		am->stack[am->stack_pos-1].position:
@@ -236,11 +345,11 @@ int get_stacked_position(assigned_map *am) {
 
 void print_current_map(assigned_map *am) {
 	int i;
-	strict_verbose("\n  Current Map: (");
+	strict_verbose(" (");
 	for (i=0; i<am->size;++i) {
-		strict_verbose("%s%d:%d", i==0?"":", " ,i, am->current[i]);
+		strict_verbose("%s%d", i==0?"":", " , am->current[i]);
 	}
-	strict_verbose(")\n");
+	strict_verbose(")");
 }
 
 void assign_map(assigned_map *am, unsigned int var) {
@@ -282,7 +391,7 @@ static int detect_assignment(assigned_map *am, zend_op_array *opa, int position)
 		assign_map(am, var);
 
 		const char* name = opa->vars[var].name;
-		strict_verbose("  FOUND ASSIGNMENT %s (%d) line %d", name, var, op.lineno);
+		strict_verbose("FOUND ASSIGNMENT %s (%d) line %d", name, var, op.lineno);
 	}
 
 	return detect;
@@ -293,6 +402,14 @@ static void strict_error(int type, const char *filename, const int line, const c
 	va_start(args, format);
 	zend_error_cb(type, filename, line, format, args);
 	va_end(args);
+}
+
+static int is_defined_variable_name(const char *name) {
+	return
+		strcmp(name, "this") == 0 ||
+		strcmp(name, "argv") == 0 ||
+		strcmp(name, "argc") == 0
+	;
 }
 
 static int detect_use_of_unassigned_variable(assigned_map *am, zend_op_array *opa, int position)
@@ -307,20 +424,24 @@ static int detect_use_of_unassigned_variable(assigned_map *am, zend_op_array *op
 	if ((op_info[op.opcode].use_flag & STRICT_USE_OP1) && op.STRICT_TYPE(op1) == IS_CV) {
 		if (!is_assigned(am, op.STRICT_ZNODE_ELEM(op1, var))) {
 			const char* name = opa->vars[op.STRICT_ZNODE_ELEM(op1, var)].name;
-			strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
-				"Use of unassigned local variable $%s.", name
-			);
-			detect = 1;
+			if (!is_defined_variable_name(name)) {
+				strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
+					"Use of unassigned local variable $%s.", name
+				);
+				detect = 1;
+			}
 		}
 	}
 
 	if ((op_info[op.opcode].use_flag & STRICT_USE_OP2) && op.STRICT_TYPE(op2) == IS_CV) {
 		if (!is_assigned(am, op.STRICT_ZNODE_ELEM(op2, var))) {
 			const char* name = opa->vars[op.STRICT_ZNODE_ELEM(op2, var)].name;
-			strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
-				"Use of unassigned local variable $%s.", name
-			);
-			detect = 1;
+			if (!is_defined_variable_name(name)) {
+				strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
+					"Use of unassigned local variable $%s.", name
+				);
+				detect = 1;
+			}
 		}
 	}
 
@@ -342,56 +463,7 @@ static zend_brk_cont_element* strict_find_brk_cont(zend_uint nest_levels, int ar
 	return jmp_to;
 }
 
-/*
-static int strict_detect_jump(zend_op_array *opa, zend_uint position, zend_op **jmp1, zend_op **jmp2)
-{
-	const zend_op op = opa->opcodes[position];
-
-	if (op.opcode == ZEND_JMP) {
-		*jmp1 = STRICT_ZNODE_ELEM(op.op1, jmp_addr);
-		return 1;
-	} else if (op.opcode == ZEND_JMPZ || op.opcode == ZEND_JMPNZ ||
-				op.opcode == ZEND_JMPZ_EX || op.opcode == ZEND_JMPNZ_EX) {
-		*jmp1 = &opa->opcodes[position + 1];
-		*jmp2 = STRICT_ZNODE_ELEM(op.op2, jmp_addr);
-		return 1;
-	} else if (op.opcode == ZEND_JMPZNZ) {
-		*jmp1 = &opa->opcodes[STRICT_ZNODE_ELEM(op.op2, opline_num)];
-		*jmp2 = &opa->opcodes[op.extended_value];
-		return 1;
-	} else if (op.opcode == ZEND_BRK || op.opcode == ZEND_CONT) {
-		zend_brk_cont_element *el;
-
-		if (STRICT_TYPE(op.op2) == IS_CONST
-			&& STRICT_ZNODE_ELEM(op.op1, jmp_addr) != (zend_op*) 0xFFFFFFFF
-		) {
-			zend_brk_cont_element *el;
-#if PHP_VERSION_ID >= 50399
-			el = strict_find_brk_cont(op.op2.constant, STRICT_ZNODE_ELEM(op.op1, opline_num), opa);
-#else
-			el = strict_find_brk_cont(op.op2.u.constant.value.lval, STRICT_ZNODE_ELEM(op.op1, opline_num), opa);
-#endif
-			*jmp1 = &opa->opcodes[op.opcode == ZEND_BRK ? el->brk : el->cont];
-			*jmp2 = NULL;
-			return 1;
-		}
-	} else if (op.opcode == ZEND_FE_RESET || op.opcode == ZEND_FE_FETCH) {
-		*jmp1 = &opa->opcodes[position + 1];;
-		*jmp2 = &opa->opcodes[STRICT_ZNODE_ELEM(op.op2, opline_num)];
-		return 1;
-#if PHP_VERSION_ID >= 50300
-	} else if (op.opcode == ZEND_GOTO) {
-		*jmp1 = STRICT_ZNODE_ELEM(op.op1, jmp_addr);
-		*jmp2 = NULL;
-		return 1;
-#endif
-	}
-
-	return 0;
-}
-*/
-
-static int detect_jump_pos(zend_op_array *opa, zend_uint position, int *jmp1, int *jmp2)
+static int detect_jump(zend_op_array *opa, zend_uint position, int *jmp1, int *jmp2)
 {
  	zend_op *base_address = &(opa->opcodes[0]);
 
@@ -445,55 +517,124 @@ void strict_scan_op_array(zend_op_array *opa TSRMLS_DC)
 	int* passed;
 	assigned_map *am;
 
-	am = create_assigned_map(opa->last_var+1);
-	passed = calloc(opa->last+1, sizeof(int));
+	source_graph *sg = sg_create(opa->last);
+	for (position=0; position<opa->last; ++position) {
+		int jmp1 = -1, jmp2 = -1;
+		if (detect_jump(opa, position, &jmp1, &jmp2)) {
+			sg_assosiate(sg, position, jmp1);
+			if (jmp2 != -1) {
+				sg_assosiate(sg, position, jmp2);
+			}
+		} else {
+			sg_assosiate(sg, position, position + 1);
+		}
+	}
+
+	//*
+	strict_verbose("DUMP source_graph\n");
+	sg_show_ex(sg, opa, strict_verbose);
+	strict_verbose("END DUMP source_graph\n");
+	//*/
+
+	am = create_assigned_map(opa->last_var);
+	passed = calloc(opa->last, sizeof(int));
 
 	position = 0;
+
+	strict_verbose("%-55sstack  pos: %-18s| action\n", "line", "code");
 	while (position < opa->last) {
+		source_graph_node *node;
 		int jmp1 = -1, jmp2 = -1;
 
-		strict_verbose("%4d:", position);
-		detect_use_of_unassigned_variable(am, opa, position);
-		detect_assignment(am, opa, position);
+// {{{ show line
+		{
+		const char *source_line = NULL;
+		if (!passed[position]) {
+			source_line = get_source_line(opa, position);
+		}
+		strict_verbose("%-3d %-30s [ %-3d]%4d: %-18s|",
+			opa->opcodes[position].lineno, source_line,
+			get_stacked_position(am), position,
+			op_info[opa->opcodes[position].opcode].name
+		);
+		print_current_map(am);
+		strict_verbose(" | ");
+		}
+// }}}
+
+		node = sg_get_node(sg, position);
+		if (1 < node->in) {
+			if (get_stacked_position(am) == position) {
+				pop_assigned_map(am);
+				strict_verbose("POP  ");
+			}
+
+			/* stash はいらん子やったんや……
+			if (0 <= get_stacked_position(am)) {
+				position = pop_and_stash_assigned_map(am);
+				strict_verbose("POP and stash and slide to %d\n", position);
+				continue;
+			} else if (exists_stash(am)) {
+				strict_verbose("***restore*** ");
+				restore_stash(am);
+			} else {
+				strict_verbose("***restore? but no stash*** ");
+			}]*/
+		}
 
 		passed[position] = 1;
-		if (detect_jump_pos(opa, position, &jmp1, &jmp2)) {
+		if (detect_jump(opa, position, &jmp1, &jmp2)) {
+			if (opa->opcodes[position].opcode == ZEND_JMPZ_EX || opa->opcodes[position].opcode == ZEND_JMPNZ_EX) {
+				stack_exjmp_assigned_map(am, opa->opcodes[position].opcode);
+			}
+
 			if (jmp1 != -1 && jmp2 != -1) {
 				position = MIN(jmp1, jmp2);
 				stack_assigned_map(am, MAX(jmp1, jmp2));
-				strict_verbose("  STACK %d and jump to %d", MAX(jmp1, jmp2), position);
+				strict_verbose("STACK %d and jump to %d", MAX(jmp1, jmp2), position);
 			} else { // jmp1 only
 				if (passed[jmp1]) {
 					if (get_stacked_position(am) < 0) {
 						position += 1;
-						strict_verbose("  jump but passed %d, next %d", jmp1, position);
+						strict_verbose("jump but passed %d, next %d", jmp1, position);
 					} else {
 						position = pop_assigned_map(am);
-						strict_verbose("  POP and jump to %d", position);
+						strict_verbose("POP and jump to %d", position);
 					}
 				} else if (0 < get_stacked_position(am) && get_stacked_position(am) < jmp1) {
-					position = pop_assigned_map(am);
-					strict_verbose("  POP and jump to %d (overide %d)", position, jmp1);
+					position = replace_assigned_map(am, jmp1);
+					strict_verbose("replace and jump to %d (overide %d)", position, jmp1);
 				} else {
 					position = jmp1;
-					strict_verbose("  jump to %d", position);
+					strict_verbose("jump to %d", position);
 				}
 			}
 		} else {
+			strict_verbose("CHECK ");
+			detect_use_of_unassigned_variable(am, opa, position);
+			detect_assignment(am, opa, position);
+
 			position += 1;
 		}
 
 		//strict_verbose("stacked_position = %d\n", get_stacked_position(am));
-		if (get_stacked_position(am) == position) {
-			pop_assigned_map(am);
-			strict_verbose("  POP and next %d", position);
-			print_current_map(am);
-		}
 
 		strict_verbose("\n");
+
 	}
 
+	{
+		int i;
+		strict_verbose("no passed: ");
+		for (i=0;i<opa->last;++i) {
+			if (!passed[i]) {
+				strict_verbose("%d ", i);
+			}
+		}
+		strict_verbose("\n");
+	}
 	free(passed);
+
 }
 /* }}} */
 
@@ -520,9 +661,7 @@ static inline const char* get_op_type_name(int type) {
 }
 
 
-/* {{{ void strict_op_dump(const zend_op op) */
-void strict_op_dump(zend_op_array* opa, int position TSRMLS_DC) {
-
+void strict_op_dump_op(zend_op_array* opa, int position TSRMLS_DC) {
 	zend_op op = opa->opcodes[position];
 	int jmp1 = -1, jmp2 = -1;
 
@@ -537,7 +676,7 @@ void strict_op_dump(zend_op_array* opa, int position TSRMLS_DC) {
 		get_op_type_name(op.result.op_type), (op.result.op_type==IS_CV ? op.result.u.var : -1)
 	);
 
-	if (detect_jump_pos(opa, position, &jmp1, &jmp2)) {
+	if (detect_jump(opa, position, &jmp1, &jmp2)) {
 		if (jmp2 == -1) {
 			php_printf(" j1->%-2d", jmp1);
 		} else {
@@ -546,5 +685,70 @@ void strict_op_dump(zend_op_array* opa, int position TSRMLS_DC) {
 	}
 
 	php_printf("\n");
+}
+/* {{{ void strict_op_dump(const zend_op op) */
+void strict_op_dump(zend_op_array* opa TSRMLS_DC) {
+	int i;
+
+	php_printf("---------------------------------------\n");
+	if (opa->filename) {
+		php_printf("Filename        : %s\n", opa->filename);
+	}
+	if (opa->scope) {
+		php_printf("Class           : %s\n", opa->scope->name);
+	}
+
+	if (opa->function_name) {
+		php_printf("Function        : %s\n", opa->function_name);
+	} else
+
+	if (opa->doc_comment) {
+		php_printf("Comment         : %s\n", opa->doc_comment);
+	}
+
+	if (opa->last_var) {
+		php_printf("Compiled Vars   : (%d/%d) ", opa->last_var, opa->size_var);
+		for (i=0;i<opa->last_var;++i) {
+			php_printf("%d:%s ", i, opa->vars[i].name);
+		}
+		php_printf("\n");
+	}
+
+	if (opa->try_catch_array) {
+		php_printf("try_catch_array : (%d) ", opa->last_try_catch);
+		for (i=0;i<opa->last_try_catch;++i) {
+			const zend_try_catch_element *e = &opa->try_catch_array[i];
+			php_printf("{try:%d, catch:%d} ", e->try_op, e->catch_op);
+		}
+		php_printf("\n");
+	}
+
+	if (opa->brk_cont_array) {
+		php_printf("brk_cont_array  : (%d) ", opa->last_brk_cont);
+		for (i=0;i<opa->last_brk_cont;++i) {
+			const zend_brk_cont_element *e = &opa->brk_cont_array[i];
+			php_printf("{brk:%d, cont:%d, parent:%d, start:%d} ", e->brk, e->cont, e->parent, e->start);
+		}
+		php_printf("\n");
+
+	}
+
+
+	php_printf("this_var        : %5d \t", opa->this_var);
+	php_printf("backpatch_count : %5d \n", opa->backpatch_count);
+	php_printf("fn_flags        : %5d \t", opa->fn_flags);
+	php_printf("type            : %5d \n", opa->type);
+	php_printf("T               : %5d \t", opa->T);
+	php_printf("current_brk_cont: %5d \n", opa->current_brk_cont);
+	php_printf("early_binding   : %5d \t", opa->early_binding);
+	php_printf("return_reference: %5d \n", opa->return_reference);
+	php_printf("line_start      : %5d \t", opa->line_start);
+	php_printf("line_end        : %5d \n", opa->line_end);
+
+	/*
+	for (i = 0; i < opa->last; ++i) {
+		strict_op_dump_op(opa, i TSRMLS_CC);
+	}
+	*/
 }
 /* }}} */

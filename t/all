@@ -1,0 +1,6 @@
+[php]
+extension=/home/do_aki/work/php-ext-strict/modules/strict.so
+strict.use = on
+strict.dump = on
+strict.verbose = on
+

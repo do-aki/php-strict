@@ -149,29 +149,15 @@ void strict_verbose(const char* format, ...) {
 	}
 }
 
-
-/* {{{ void strict_dump_op_array
- */
-static void strict_dump_op_array(zend_op_array* opa)
-{
-	int i;
-	for (i=0; i < opa->last; ++i) {
-		strict_op_dump(opa, i);
-	}
-}
-/* }}} */
-
 /* {{{ int strict_scan_function
  */
 static int strict_scan_function(zend_op_array* fopa TSRMLS_DC)
 {
 	if (fopa->type == ZEND_USER_FUNCTION) {
-		strict_verbose("Function: %s\n", fopa->function_name);
 		if (STRICT_G(dump)) {
-			strict_dump_op_array(fopa TSRMLS_CC);
+			strict_op_dump(fopa TSRMLS_CC);
 		}
 		strict_scan_op_array(fopa TSRMLS_CC);
-		strict_verbose("End of function %s.\n", fopa->function_name);
 	}
 	return ZEND_HASH_APPLY_KEEP;
 }
@@ -183,9 +169,7 @@ static int strict_scan_class(zend_class_entry **class_entry TSRMLS_DC)
 {
 	zend_class_entry *ce = *class_entry;
 	if (ce->type != ZEND_INTERNAL_CLASS) {
-		strict_verbose("Class: %s\n", ce->name);
 		zend_hash_apply(&ce->function_table, (apply_func_t) strict_scan_function TSRMLS_CC);
-		strict_verbose("End of class %s.\n\n", ce->name);
 	}
 	return ZEND_HASH_APPLY_KEEP;
 }
@@ -204,7 +188,7 @@ static zend_op_array *strict_compile_file(zend_file_handle *file_handle, int typ
 
 		if (op_array) {
 			if (STRICT_G(dump)) {
-				strict_dump_op_array(op_array);
+				strict_op_dump(op_array);
 			}
 			strict_scan_op_array(op_array);
 		}
@@ -231,7 +215,7 @@ static zend_op_array *strict_compile_string(zval *source_string, char *filename 
 	op_array = original_compile_string(source_string, filename TSRMLS_CC);
 
 	if (STRICT_G(dump)) {
-		strict_dump_op_array(op_array);
+		strict_op_dump(op_array);
 	}
 
 	if (STRICT_G(use)) {

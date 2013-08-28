@@ -1,0 +1,6 @@
+
+---- EXPECTED OUTPUT
+
+---- ACTUAL OUTPUT
+Warning: Use of unassigned local variable $a. in /home/do_aki/work/php-ext-strict/tests/if_else_both_assign.php on line 7
+---- FAILED
