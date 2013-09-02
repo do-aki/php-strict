@@ -18,7 +18,8 @@ if (preg_match('/\.phpt\z/', $target)) {
     $unlink = true;
 }
 
-$php = 'php -dextension=/home/do_aki/work/php-ext-strict/modules/strict.so';
+$php =  '~/.phpenv/versions/5.3.27/bin/php';
+$php .= ' -dextension=/home/do_aki/work/php-ext-strict/modules/strict.so';
 $php .= ' -dstrict.dump=on -dstrict.verbose=on';
 system("{$php} {$dumpfile}");
 

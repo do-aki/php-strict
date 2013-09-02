@@ -4,7 +4,7 @@ if statement with and or
 strict.use = 1
 --FILE--
 <?php
-  if (($a=1) && ($b=2) || ($c=3)) {
+  if (($a=2) && ($b=1) || ($c=0)) {
     echo $a, $b, $c; // a: OK b:NG c:NG
   } else {
     echo $a, $b, $c; // a:OK b:NG c:NG

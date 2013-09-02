@@ -182,7 +182,7 @@ const strict_op_info op_info[] = {
 /* {{{ util */
 typedef struct _file_cache {
 	char *filename;
-	char line[100][31];
+	char line[500][31];
 } file_cache;
 static file_cache _fc;
 
@@ -192,7 +192,7 @@ const char *get_source_line(zend_op_array *opa, int position) {
 	if (init == 0) {
 		int i;
 		_fc.filename = NULL;
-		for(i=0;i<100;++i) { _fc.line[i][0] = 0; }
+		for(i=0;i<500;++i) { _fc.line[i][0] = 0; }
 		init = 1;
 	}
 
@@ -202,6 +202,9 @@ const char *get_source_line(zend_op_array *opa, int position) {
 
 		_fc.filename = opa->filename;
 		fp = fopen(_fc.filename, "r");
+		if (!fp) {
+			return NULL;
+		}
 		while(fgets(buf, 1024, fp) != NULL) { // とりあえず、メンドイので 1行は1024byte 未満とする
 			buf[1024] = 0; // safety
 			buf[strlen(buf)-1] = 0; // remove \n
@@ -236,7 +239,7 @@ typedef struct _assigned_map {
 	int *current;
 
 	int exjmp_pos;
-	zend_uchar exjmp[100];
+	zend_uchar exjmp[1000];
 
 	int stash_pos;
 	int *stash[100];
@@ -245,9 +248,22 @@ typedef struct _assigned_map {
 	struct {
 		int position;
 		int* map;
-	} stack[100];
+	} stack[1000];
 
 } assigned_map;
+
+void print_map(int *map, int size) {
+	int i;
+	strict_verbose(" (");
+	for (i=0; i<size;++i) {
+		strict_verbose("%s%d", i==0?"":", " , map[i]);
+	}
+	strict_verbose(")");
+}
+
+void print_current_map(assigned_map *am) {
+	print_map(am->current, am->size);
+}
 
 assigned_map *create_assigned_map(unsigned int size) {
 	assigned_map *am = malloc(sizeof(assigned_map));
@@ -255,6 +271,7 @@ assigned_map *create_assigned_map(unsigned int size) {
 	am->current = calloc(sizeof(int), size);
 	am->stack_pos = 0;
 	am->stash_pos = 0;
+	am->exjmp_pos = 0;
 	return am;
 }
 
@@ -286,11 +303,49 @@ int pop_assigned_map(assigned_map *am) {
 	return am->stack[am->stack_pos].position;
 }
 
+int pop_merge_assigned_map(assigned_map *am) {
+	int i;
+	if (am->stack_pos <= 0) {
+		return -1;
+	}
+
+	if (0 < am->stash_pos) {
+		--am->stash_pos;
+
+		for (i=0;i<am->size;++i) {
+			am->current[i] = am->current[i] && am->stash[am->stash_pos][i];
+		}
+		free(am->stash[am->stash_pos]);
+
+		--am->stack_pos;
+		free(am->stack[am->stack_pos].map);
+		return am->stack[am->stack_pos].position;
+	} else {
+		free(am->current);
+
+		--am->stack_pos;
+		am->current = am->stack[am->stack_pos].map;
+		return am->stack[am->stack_pos].position;
+	}
+}
+
+void replace_pos_assigned_map(assigned_map *am, int position) {
+	if (am->stack_pos <= 0) {
+		abort();
+	}
+
+	am->stack[am->stack_pos-1].position = position;
+}
+
 int replace_assigned_map(assigned_map *am, int position) {
 	int pos;
 	if (am->stack_pos <= 0) {
 		return -1;
 	}
+
+	am->stash[am->stash_pos] = malloc(sizeof(int) * am->size);
+	memcpy(am->stash[am->stash_pos], am->current, sizeof(int) * am->size);
+	++am->stash_pos;
 
 	memcpy(am->current, am->stack[am->stack_pos-1].map, sizeof(int) * am->size);
 	pos = am->stack[am->stack_pos-1].position;
@@ -302,6 +357,18 @@ int replace_assigned_map(assigned_map *am, int position) {
 void stack_exjmp_assigned_map(assigned_map *am, zend_uchar op) {
 	am->exjmp[am->exjmp_pos++] = op;
 }
+
+int is_stacked_exjmp_assigned_map(assigned_map *am) {
+	return 0 < am->exjmp_pos;
+}
+
+void remove_stacked_exjmp_assigned_map(assigned_map *am) {
+	if (am->exjmp_pos <= 0) {
+		return;
+	}
+	--am->exjmp_pos;
+}
+
 
 zend_uchar pop_exjmp_assigned_map(assigned_map *am) {
 	if (am->exjmp_pos <= 0) {
@@ -341,15 +408,6 @@ int get_stacked_position(assigned_map *am) {
 		am->stack[am->stack_pos-1].position:
 		-1
 	;
-}
-
-void print_current_map(assigned_map *am) {
-	int i;
-	strict_verbose(" (");
-	for (i=0; i<am->size;++i) {
-		strict_verbose("%s%d", i==0?"":", " , am->current[i]);
-	}
-	strict_verbose(")");
 }
 
 void assign_map(assigned_map *am, unsigned int var) {
@@ -531,9 +589,11 @@ void strict_scan_op_array(zend_op_array *opa TSRMLS_DC)
 	}
 
 	//*
-	strict_verbose("DUMP source_graph\n");
-	sg_show_ex(sg, opa, strict_verbose);
-	strict_verbose("END DUMP source_graph\n");
+	if (STRICT_G(verbose)) {
+		strict_verbose("DUMP source_graph\n");
+		sg_show_ex(sg, opa, strict_verbose);
+		strict_verbose("END DUMP source_graph\n");
+	}
 	//*/
 
 	am = create_assigned_map(opa->last_var);
@@ -541,57 +601,70 @@ void strict_scan_op_array(zend_op_array *opa TSRMLS_DC)
 
 	position = 0;
 
-	strict_verbose("%-55sstack  pos: %-18s| action\n", "line", "code");
+	strict_verbose("%-35sstack  pos: %-18s| action\n", "line", "code");
 	while (position < opa->last) {
 		source_graph_node *node;
 		int jmp1 = -1, jmp2 = -1;
 
 // {{{ show line
-		{
-		const char *source_line = NULL;
-		if (!passed[position]) {
-			source_line = get_source_line(opa, position);
-		}
-		strict_verbose("%-3d %-30s [ %-3d]%4d: %-18s|",
-			opa->opcodes[position].lineno, source_line,
-			get_stacked_position(am), position,
-			op_info[opa->opcodes[position].opcode].name
-		);
-		print_current_map(am);
-		strict_verbose(" | ");
+		if (STRICT_G(verbose)) {
+			const char *source_line = NULL;
+			if (!passed[position]) {
+				source_line = get_source_line(opa, position);
+			}
+			strict_verbose("%-3d %-30s [ %3d%1s]%4d: %-18s|",
+				opa->opcodes[position].lineno, source_line,
+				get_stacked_position(am), (is_stacked_exjmp_assigned_map(am)?"*":""), position,
+				op_info[opa->opcodes[position].opcode].name
+			);
+			print_current_map(am);
+			strict_verbose(" | ");
 		}
 // }}}
 
 		node = sg_get_node(sg, position);
 		if (1 < node->in) {
 			if (get_stacked_position(am) == position) {
-				pop_assigned_map(am);
-				strict_verbose("POP  ");
-			}
+				if (opa->opcodes[position].opcode == ZEND_JMPZ_EX) {
 
-			/* stash はいらん子やったんや……
-			if (0 <= get_stacked_position(am)) {
-				position = pop_and_stash_assigned_map(am);
-				strict_verbose("POP and stash and slide to %d\n", position);
-				continue;
-			} else if (exists_stash(am)) {
-				strict_verbose("***restore*** ");
-				restore_stash(am);
-			} else {
-				strict_verbose("***restore? but no stash*** ");
-			}]*/
+				} else {
+					if (is_stacked_exjmp_assigned_map(am)) {
+
+					} else {
+						pop_merge_assigned_map(am);
+						strict_verbose("POP (merge) ");
+					}
+				}
+			}
 		}
 
 		passed[position] = 1;
 		if (detect_jump(opa, position, &jmp1, &jmp2)) {
-			if (opa->opcodes[position].opcode == ZEND_JMPZ_EX || opa->opcodes[position].opcode == ZEND_JMPNZ_EX) {
-				stack_exjmp_assigned_map(am, opa->opcodes[position].opcode);
-			}
-
 			if (jmp1 != -1 && jmp2 != -1) {
-				position = MIN(jmp1, jmp2);
-				stack_assigned_map(am, MAX(jmp1, jmp2));
-				strict_verbose("STACK %d and jump to %d", MAX(jmp1, jmp2), position);
+				if (is_stacked_exjmp_assigned_map(am)) {
+					position = MIN(jmp1, jmp2);
+					replace_pos_assigned_map(am, MAX(jmp1, jmp2));
+					strict_verbose("next to %d (replace pos to %d)", position, MAX(jmp1, jmp2));
+				} else {
+					if (opa->opcodes[position].opcode == ZEND_JMPZ_EX) {
+						stack_exjmp_assigned_map(am, opa->opcodes[position].opcode);
+						strict_verbose("first exjmp ");
+					}
+					position = MIN(jmp1, jmp2);
+					stack_assigned_map(am, MAX(jmp1, jmp2));
+					strict_verbose("STACK %d and jump to %d", MAX(jmp1, jmp2), position);
+				}
+
+				if (passed[position]) {
+					if (get_stacked_position(am) < 0) {
+						position += 1;
+						strict_verbose("  jump but passed %d, next %d", jmp1, position);
+					} else {
+						position = pop_assigned_map(am);
+						strict_verbose("  POP and jump to %d", position);
+					}
+				}
+
 			} else { // jmp1 only
 				if (passed[jmp1]) {
 					if (get_stacked_position(am) < 0) {
@@ -602,11 +675,21 @@ void strict_scan_op_array(zend_op_array *opa TSRMLS_DC)
 						strict_verbose("POP and jump to %d", position);
 					}
 				} else if (0 < get_stacked_position(am) && get_stacked_position(am) < jmp1) {
+					if (is_stacked_exjmp_assigned_map(am)) {
+						remove_stacked_exjmp_assigned_map(am);
+						strict_verbose("exists exjmp removed ");
+					}
 					position = replace_assigned_map(am, jmp1);
 					strict_verbose("replace and jump to %d (overide %d)", position, jmp1);
 				} else {
-					position = jmp1;
-					strict_verbose("jump to %d", position);
+					if (is_stacked_exjmp_assigned_map(am)) {
+						position = pop_assigned_map(am);
+						remove_stacked_exjmp_assigned_map(am);
+						strict_verbose("POP and jump to %d (remove exjmp)", position);
+					} else {
+						position = jmp1;
+						strict_verbose("jump to %d", position);
+					}
 				}
 			}
 		} else {

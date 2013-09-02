@@ -39,8 +39,8 @@ source_graph_node* sg_get_node(source_graph* sg, zend_uint position)
 void sg_assosiate(source_graph* sg, zend_uint src_pos, zend_uint dest_pos)
 {
 	source_graph_node **new_edges;
-	source_graph_node * src;
-	source_graph_node * dest;
+	source_graph_node *src;
+	source_graph_node *dest;
 
 	if (sg->node_num <= src_pos || sg->node_num <= dest_pos) {
 		return;
@@ -49,7 +49,7 @@ void sg_assosiate(source_graph* sg, zend_uint src_pos, zend_uint dest_pos)
 	src = sg_get_node(sg, src_pos);
 	dest = sg_get_node(sg, dest_pos);
 
-	new_edges = realloc(src->out_edges, sizeof(source_graph_node*) * src->out + 1);
+	new_edges = realloc(src->out_edges, sizeof(source_graph_node*) * (src->out + 1));
 	if (NULL == new_edges) {
 		abort();
 	}
@@ -58,7 +58,7 @@ void sg_assosiate(source_graph* sg, zend_uint src_pos, zend_uint dest_pos)
 	src->out_edges = new_edges;
 
 
-	new_edges = realloc(dest->in_edges, sizeof(source_graph_node*) * dest->in + 1);
+	new_edges = realloc(dest->in_edges, sizeof(source_graph_node*) * (dest->in + 1));
 	if (NULL == new_edges) {
 		abort();
 	}
@@ -120,6 +120,7 @@ void sg_show_ex(source_graph *sg, zend_op_array *opa, void print(const char* for
 			snprintf(str, 16, "%s%d", (j==0?"":","), node->out_edges[j]->position);
 			strcat(buf, str);
 		}
+
 		print("%s\n", buf);
 	}
 }

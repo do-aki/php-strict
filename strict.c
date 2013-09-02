@@ -17,6 +17,12 @@ static zend_op_array* strict_compile_file(zend_file_handle*, int TSRMLS_DC);
 static zend_op_array* (*original_compile_string)(zval *source_string, char *filename TSRMLS_DC);
 static zend_op_array* strict_compile_string(zval *source_string, char *filename TSRMLS_DC);
 
+static void (*original_execute)(zend_op_array *op_array TSRMLS_DC);
+#if PHP_VERSION_ID >= 50500
+static void strict_execute(zend_execute_data *arg TSRMLS_DC);
+#else
+static void strict_execute(zend_op_array *arg TSRMLS_DC);
+#endif
 ZEND_DECLARE_MODULE_GLOBALS(strict)
 
 /* True global resources - no need for thread safety here */
@@ -63,6 +69,7 @@ PHP_INI_BEGIN()
     STD_PHP_INI_ENTRY("strict.use", "1", PHP_INI_ALL, OnUpdateBool, use, zend_strict_globals, strict_globals)
     STD_PHP_INI_ENTRY("strict.dump", "0", PHP_INI_ALL, OnUpdateBool, dump, zend_strict_globals, strict_globals)
     STD_PHP_INI_ENTRY("strict.verbose", "0", PHP_INI_ALL, OnUpdateBool, verbose, zend_strict_globals, strict_globals)
+    STD_PHP_INI_ENTRY("strict.execute", "1", PHP_INI_ALL, OnUpdateBool, execute, zend_strict_globals, strict_globals)
 PHP_INI_END()
 /* }}} */
 
@@ -73,6 +80,7 @@ static void php_strict_init_globals(zend_strict_globals *strict_globals)
 	strict_globals->use = 1;
 	strict_globals->dump = 0;
 	strict_globals->verbose = 0;
+	strict_globals->execute = 1;
 
 	strict_globals->filename = NULL;
 }
@@ -102,10 +110,18 @@ PHP_MSHUTDOWN_FUNCTION(strict)
 PHP_RINIT_FUNCTION(strict)
 {
 	original_compile_string = zend_compile_string;
-	original_compile_file = zend_compile_file;
-
 	zend_compile_string = strict_compile_string;
+
+	original_compile_file = zend_compile_file;
 	zend_compile_file = strict_compile_file;
+
+#if PHP_VERSION_ID >= 50500
+	original_execute = zend_execute_ex;
+	zend_execute_ex = strict_execute;
+#else
+	original_execute = zend_execute;
+	zend_execute = strict_execute;
+#endif
 
     return SUCCESS;
 }
@@ -117,6 +133,11 @@ PHP_RSHUTDOWN_FUNCTION(strict)
 {
 	zend_compile_string = original_compile_string;
 	zend_compile_file = original_compile_file;
+#if PHP_VERSION_ID >= 50500
+	zend_execute_ex = original_execute;
+#else
+	zend_execute = original_execute;
+#endif
 	return SUCCESS;
 }
 /* }}} */
@@ -157,7 +178,10 @@ static int strict_scan_function(zend_op_array* fopa TSRMLS_DC)
 		if (STRICT_G(dump)) {
 			strict_op_dump(fopa TSRMLS_CC);
 		}
-		strict_scan_op_array(fopa TSRMLS_CC);
+
+		if (!fopa->doc_comment || !strstr(fopa->doc_comment, NO_STRICT)) {
+			strict_scan_op_array(fopa TSRMLS_CC);
+		}
 	}
 	return ZEND_HASH_APPLY_KEEP;
 }
@@ -168,7 +192,7 @@ static int strict_scan_function(zend_op_array* fopa TSRMLS_DC)
 static int strict_scan_class(zend_class_entry **class_entry TSRMLS_DC)
 {
 	zend_class_entry *ce = *class_entry;
-	if (ce->type != ZEND_INTERNAL_CLASS) {
+	if (ce->type == ZEND_USER_CLASS && (!ce->doc_comment || !strstr(ce->doc_comment, NO_STRICT))) {
 		zend_hash_apply(&ce->function_table, (apply_func_t) strict_scan_function TSRMLS_CC);
 	}
 	return ZEND_HASH_APPLY_KEEP;
@@ -235,6 +259,20 @@ static zend_op_array *strict_compile_string(zval *source_string, char *filename 
 	}
 
 	return op_array;
+}
+/* }}} */
+
+/* {{{ void strict_execute
+ */
+#if PHP_VERSION_ID >= 50500
+static void strict_execute(zend_execute_data *arg TSRMLS_DC)
+#else
+static void strict_execute(zend_op_array *arg TSRMLS_DC)
+#endif
+{
+	if (STRICT_G(execute)) {
+		original_execute(arg TSRMLS_CC);
+	}
 }
 /* }}} */
 

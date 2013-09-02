@@ -23,11 +23,13 @@ PHP_RINIT_FUNCTION(strict);
 PHP_RSHUTDOWN_FUNCTION(strict);
 PHP_MINFO_FUNCTION(strict);
 
+#define NO_STRICT "@no strict"
 
 ZEND_BEGIN_MODULE_GLOBALS(strict)
 	long use;
 	long dump;
 	long verbose;
+	long execute;
 	char *filename;
 	int  detect;
 ZEND_END_MODULE_GLOBALS(strict)
