@@ -59,5 +59,5 @@ if test "$PHP_STRICT" != "no"; then
   dnl
   dnl PHP_SUBST(STRICT_SHARED_LIBADD)
 
-  PHP_NEW_EXTENSION(strict, strict.c strict_op.c source_graph.c, $ext_shared)
+  PHP_NEW_EXTENSION(strict, strict.c strict_op.c source_graph.c source_file.c, $ext_shared)
 fi
