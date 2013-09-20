@@ -16,6 +16,9 @@ static zend_op_array* strict_compile_file(zend_file_handle*, int TSRMLS_DC);
 static zend_op_array* (*original_compile_string)(zval *source_string, char *filename TSRMLS_DC);
 static zend_op_array* strict_compile_string(zval *source_string, char *filename TSRMLS_DC);
 
+#ifndef PHP_FE_END
+#define PHP_FE_END {NULL, NULL, NULL}
+#endif
 
 #if PHP_VERSION_ID >= 50500
 static void (*original_execute)(zend_execute_data *arg TSRMLS_DC);
