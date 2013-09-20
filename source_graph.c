@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include "source_graph.h"
 #include "strict_op.h"
+#include "source_file.h"
 
 source_graph* sg_create(unsigned int size)
 {

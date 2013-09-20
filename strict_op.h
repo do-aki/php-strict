@@ -9,7 +9,6 @@ typedef struct _strict_op_info {
 	const char *name;
 } strict_op_info;
 
-const char *get_source_line(zend_op_array *opa, int position);
 const char *get_opcode_name(zend_uchar opcode);
 
 #endif

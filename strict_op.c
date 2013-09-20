@@ -2,6 +2,25 @@
 #include "php_strict.h"
 #include "source_graph.h"
 #include "strict_op.h"
+#include "source_file.h"
+
+#if PHP_VERSION_ID >= 50399
+# define ZNODE znode_op
+# define ZNODE_ELEM(node,var) node.var
+# define OP_TYPE(t) t##_type
+# define STRICT_EXTENDED_VALUE(o) extended_value
+#else
+# define ZNODE znode
+# define ZNODE_ELEM(node,var) node.u.var
+# define OP_TYPE(t) t.op_type
+# define STRICT_EXTENDED_VALUE(o) o.u.EA.type
+#endif
+
+#if PHP_VERSION_ID >= 50500
+# define VAR_NUM(v) ((zend_uint)(EX_TMP_VAR_NUM(0, 0) - EX_TMP_VAR(0, v)))
+#else
+# define VAR_NUM(v) ((v)/(sizeof(temp_variable)))
+#endif
 
 #define STRICT_IGNORE  0
 #define STRICT_USE_OP1 1
@@ -177,50 +196,7 @@ const strict_op_info op_info[] = {
 		/* 163 */ {STRICT_USE_ALL, "ZEND_FAST_RET"                       },
 };
 /* }}} */
-#define MAX_OP_CODE 163
-
-/* {{{ util */
-typedef struct _file_cache {
-	char *filename;
-	char line[500][31];
-} file_cache;
-static file_cache _fc;
-
-const char *get_source_line(zend_op_array *opa, int position) {
-	FILE *fp;
-	static int init = 0;
-	if (init == 0) {
-		int i;
-		_fc.filename = NULL;
-		for(i=0;i<500;++i) { _fc.line[i][0] = 0; }
-		init = 1;
-	}
-
-	if (_fc.filename == NULL || strcmp(opa->filename, _fc.filename) != 0) {
-		char buf[1025];
-		int line_no = 0;
-
-		_fc.filename = opa->filename;
-		fp = fopen(_fc.filename, "r");
-		if (!fp) {
-			return NULL;
-		}
-		while(fgets(buf, 1024, fp) != NULL) { // とりあえず、メンドイので 1行は1024byte 未満とする
-			buf[1024] = 0; // safety
-			buf[strlen(buf)-1] = 0; // remove \n
-			strncpy(_fc.line[line_no], buf, 30);
-			_fc.line[line_no][30] = 0; // safety
-			++line_no;
-		}
-		fclose(fp);
-
-	}
-
-	if (opa->opcodes[position].lineno <= 100) {
-		return _fc.line[opa->opcodes[position].lineno-1];
-	}
-	return NULL;
-}
+#define MAX_OP_CODE sizeof(op_info) / sizeof(strict_op_info)
 
 const char *get_opcode_name(zend_uchar opcode) {
 	if (MAX_OP_CODE < opcode) {
@@ -229,9 +205,6 @@ const char *get_opcode_name(zend_uchar opcode) {
 
 	return op_info[opcode].name;
 }
-
-/* }}} */
-
 
 /* {{{ assigned_map */
 typedef struct _assigned_map {
@@ -430,17 +403,17 @@ static int detect_assignment(assigned_map *am, zend_op_array *opa, int position)
 	const zend_op op = opa->opcodes[position];
 
 	if (op.opcode == ZEND_ASSIGN) {
-		if (op.STRICT_TYPE(op1) == IS_CV) {
-			var =  op.STRICT_ZNODE_ELEM(op1, var);
+		if (op.OP_TYPE(op1) == IS_CV) {
+			var =  op.ZNODE_ELEM(op1, var);
 			detect = 1;
 		}
 	} else if (op.opcode == ZEND_RECV || op.opcode == ZEND_RECV_INIT) {
-		var = op.STRICT_ZNODE_ELEM(result, var);
+		var = op.ZNODE_ELEM(result, var);
 		detect = 1;
 	} else if (op.opcode == ZEND_SEND_REF) {
 		/* 必ずしも割り当てられるとは限らないが、未定義ではなくなる */
-		if (op.STRICT_TYPE(op1) == IS_CV) {
-			var =  op.STRICT_ZNODE_ELEM(op1, var);
+		if (op.OP_TYPE(op1) == IS_CV) {
+			var =  op.ZNODE_ELEM(op1, var);
 			detect = 1;
 		}
 	}
@@ -479,9 +452,9 @@ static int detect_use_of_unassigned_variable(assigned_map *am, zend_op_array *op
 		return 0;
 	}
 
-	if ((op_info[op.opcode].use_flag & STRICT_USE_OP1) && op.STRICT_TYPE(op1) == IS_CV) {
-		if (!is_assigned(am, op.STRICT_ZNODE_ELEM(op1, var))) {
-			const char* name = opa->vars[op.STRICT_ZNODE_ELEM(op1, var)].name;
+	if ((op_info[op.opcode].use_flag & STRICT_USE_OP1) && op.OP_TYPE(op1) == IS_CV) {
+		if (!is_assigned(am, op.ZNODE_ELEM(op1, var))) {
+			const char* name = opa->vars[op.ZNODE_ELEM(op1, var)].name;
 			if (!is_defined_variable_name(name)) {
 				strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
 					"Use of unassigned local variable $%s.", name
@@ -491,9 +464,9 @@ static int detect_use_of_unassigned_variable(assigned_map *am, zend_op_array *op
 		}
 	}
 
-	if ((op_info[op.opcode].use_flag & STRICT_USE_OP2) && op.STRICT_TYPE(op2) == IS_CV) {
-		if (!is_assigned(am, op.STRICT_ZNODE_ELEM(op2, var))) {
-			const char* name = opa->vars[op.STRICT_ZNODE_ELEM(op2, var)].name;
+	if ((op_info[op.opcode].use_flag & STRICT_USE_OP2) && op.OP_TYPE(op2) == IS_CV) {
+		if (!is_assigned(am, op.ZNODE_ELEM(op2, var))) {
+			const char* name = opa->vars[op.ZNODE_ELEM(op2, var)].name;
 			if (!is_defined_variable_name(name)) {
 				strict_error(E_COMPILE_WARNING, STRICT_G(filename), op.lineno,
 					"Use of unassigned local variable $%s.", name
@@ -527,7 +500,7 @@ static int detect_jump(zend_op_array *opa, zend_uint position, int *jmp1, int *j
 
 	zend_op opcode = opa->opcodes[position];
 	if (opcode.opcode == ZEND_JMP) {
-		*jmp1 = ((long) STRICT_ZNODE_ELEM(opcode.op1, jmp_addr) - (long) base_address) / sizeof(zend_op);
+		*jmp1 = ((long) ZNODE_ELEM(opcode.op1, jmp_addr) - (long) base_address) / sizeof(zend_op);
 		return 1;
 	} else if (
 		opcode.opcode == ZEND_JMPZ ||
@@ -536,32 +509,32 @@ static int detect_jump(zend_op_array *opa, zend_uint position, int *jmp1, int *j
 		opcode.opcode == ZEND_JMPNZ_EX
 	) {
 		*jmp1 = position + 1;
-		*jmp2 = ((long) STRICT_ZNODE_ELEM(opcode.op2, jmp_addr) - (long) base_address) / sizeof(zend_op);
+		*jmp2 = ((long) ZNODE_ELEM(opcode.op2, jmp_addr) - (long) base_address) / sizeof(zend_op);
 		return 1;
 	} else if (opcode.opcode == ZEND_JMPZNZ) {
-		*jmp1 = STRICT_ZNODE_ELEM(opcode.op2, opline_num);
+		*jmp1 = ZNODE_ELEM(opcode.op2, opline_num);
 		*jmp2 = opcode.extended_value;
 		return 1;
 	} else if (opcode.opcode == ZEND_BRK || opcode.opcode == ZEND_CONT) {
 		zend_brk_cont_element *el;
 
-		if (STRICT_TYPE(opcode.op2) == IS_CONST
-			&& STRICT_ZNODE_ELEM(opcode.op1, jmp_addr) != (zend_op*) 0xFFFFFFFF ) {
+		if (OP_TYPE(opcode.op2) == IS_CONST
+			&& ZNODE_ELEM(opcode.op1, jmp_addr) != (zend_op*) 0xFFFFFFFF ) {
 #if PHP_VERSION_ID >= 50399
-			el = strict_find_brk_cont(opcode.op2.constant, STRICT_ZNODE_ELEM(opcode.op1, opline_num), opa);
+			el = strict_find_brk_cont(Z_LVAL_P(opcode.op2.zv), ZNODE_ELEM(opcode.op1, opline_num), opa);
 #else
-			el = strict_find_brk_cont(opcode.op2.u.constant.value.lval, STRICT_ZNODE_ELEM(opcode.op1, opline_num), opa);
+			el = strict_find_brk_cont(opcode.op2.u.constant.value.lval, ZNODE_ELEM(opcode.op1, opline_num), opa);
 #endif
 			*jmp1 = opcode.opcode == ZEND_BRK ? el->brk : el->cont;
 			return 1;
 		}
 	} else if (opcode.opcode == ZEND_FE_RESET || opcode.opcode == ZEND_FE_FETCH) {
 		*jmp1 = position + 1;
-		*jmp2 = STRICT_ZNODE_ELEM(opcode.op2, opline_num);
+		*jmp2 = ZNODE_ELEM(opcode.op2, opline_num);
 		return 1;
 #if PHP_VERSION_ID >= 50300
 	} else if (opcode.opcode == ZEND_GOTO) {
-		*jmp1 = ((long) STRICT_ZNODE_ELEM(opcode.op1, jmp_addr) - (long) base_address) / sizeof(zend_op);
+		*jmp1 = ((long) ZNODE_ELEM(opcode.op1, jmp_addr) - (long) base_address) / sizeof(zend_op);
 		return 1;
 #endif
 	}
@@ -743,7 +716,6 @@ static inline const char* get_op_type_name(int type) {
 	}
 }
 
-
 void strict_op_dump_op(zend_op_array* opa, int position TSRMLS_DC) {
 	zend_op op = opa->opcodes[position];
 	int jmp1 = -1, jmp2 = -1;
@@ -754,10 +726,11 @@ void strict_op_dump_op(zend_op_array* opa, int position TSRMLS_DC) {
 		" 1:%s(%2d), 2:%s(%2d), r:%s(%2d)",
 		position, op.opcode, op_info[op.opcode].name,
 		op.extended_value, op.lineno,
-		get_op_type_name(op.op1.op_type), (op.op1.op_type==IS_CV ? op.op1.u.var : -1),
-		get_op_type_name(op.op2.op_type), (op.op2.op_type==IS_CV ? op.op2.u.var : -1),
-		get_op_type_name(op.result.op_type), (op.result.op_type==IS_CV ? op.result.u.var : -1)
+		get_op_type_name(op.OP_TYPE(op1)), (op.OP_TYPE(op1)==IS_CV ? ZNODE_ELEM(op.op1, var) : -1),
+		get_op_type_name(op.OP_TYPE(op2)), (op.OP_TYPE(op2)==IS_CV ? ZNODE_ELEM(op.op2, var) : -1),
+		get_op_type_name(op.OP_TYPE(result)), (op.OP_TYPE(result)==IS_CV ? ZNODE_ELEM(op.result, var) : -1)
 	);
+
 
 	if (detect_jump(opa, position, &jmp1, &jmp2)) {
 		if (jmp2 == -1) {
@@ -790,12 +763,25 @@ void strict_op_dump(zend_op_array* opa TSRMLS_DC) {
 	}
 
 	if (opa->last_var) {
+#if PHP_VERSION_ID >= 50399
+		php_printf("Compiled Vars   : (%d) ", opa->last_var);
+#else
 		php_printf("Compiled Vars   : (%d/%d) ", opa->last_var, opa->size_var);
+#endif
 		for (i=0;i<opa->last_var;++i) {
 			php_printf("%d:%s ", i, opa->vars[i].name);
 		}
 		php_printf("\n");
 	}
+
+#if PHP_VERSION_ID >= 50399
+	if (opa->last_literal) {
+		for (i=0;i<opa->last_literal;++i) {
+			const zend_literal *l = &opa->literals[i];
+			php_printf("{cache_slot:%d, constant.type:%d, hash_value:%d} ", l->cache_slot, l->constant.type, l->hash_value);
+		}
+	}
+#endif
 
 	if (opa->try_catch_array) {
 		php_printf("try_catch_array : (%d) ", opa->last_try_catch);
@@ -818,20 +804,17 @@ void strict_op_dump(zend_op_array* opa TSRMLS_DC) {
 
 
 	php_printf("this_var        : %5d \t", opa->this_var);
-	php_printf("backpatch_count : %5d \n", opa->backpatch_count);
-	php_printf("fn_flags        : %5d \t", opa->fn_flags);
-	php_printf("type            : %5d \n", opa->type);
-	php_printf("T               : %5d \t", opa->T);
-	php_printf("current_brk_cont: %5d \n", opa->current_brk_cont);
-	php_printf("early_binding   : %5d \t", opa->early_binding);
-	php_printf("return_reference: %5d \n", opa->return_reference);
+	php_printf("fn_flags        : %5d \n", opa->fn_flags);
+	php_printf("type            : %5d \t", opa->type);
+	php_printf("T               : %5d \n", opa->T);
+	php_printf("early_binding   : %5d \n", opa->early_binding);
 	php_printf("line_start      : %5d \t", opa->line_start);
 	php_printf("line_end        : %5d \n", opa->line_end);
+#if PHP_VERSION_ID < 50400
+	php_printf("backpatch_count : %5d \t", opa->backpatch_count);
+	php_printf("current_brk_cont: %5d \n", opa->current_brk_cont);
+	php_printf("return_reference: %5d \n", opa->return_reference);
+#endif
 
-	/*
-	for (i = 0; i < opa->last; ++i) {
-		strict_op_dump_op(opa, i TSRMLS_CC);
-	}
-	*/
 }
 /* }}} */

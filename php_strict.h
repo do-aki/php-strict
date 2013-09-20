@@ -30,7 +30,7 @@ ZEND_BEGIN_MODULE_GLOBALS(strict)
 	long dump;
 	long verbose;
 	long execute;
-	char *filename;
+	const char *filename;
 	int  detect;
 ZEND_END_MODULE_GLOBALS(strict)
 
@@ -40,18 +40,6 @@ ZEND_EXTERN_MODULE_GLOBALS(strict)
 #define STRICT_G(v) TSRMG(strict_globals_id, zend_strict_globals *, v)
 #else
 #define STRICT_G(v) (strict_globals.v)
-#endif
-
-#if PHP_VERSION_ID >= 50399
-# define STRICT_ZNODE znode_op
-# define STRICT_ZNODE_ELEM(node,var) node.var
-# define STRICT_TYPE(t) t##_type
-# define STRICT_EXTENDED_VALUE(o) extended_value
-#else
-# define STRICT_ZNODE znode
-# define STRICT_ZNODE_ELEM(node,var) node.u.var
-# define STRICT_TYPE(t) t.op_type
-# define STRICT_EXTENDED_VALUE(o) o.u.EA.type
 #endif
 
 void strict_verbose(const char* format, ...);

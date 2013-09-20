@@ -3,13 +3,12 @@
 #include "config.h"
 #endif
 
-
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
 #include "php_strict.h"
 #include "strict_op.h"
-
+#include "source_file.h"
 
 static zend_op_array* (*original_compile_file)(zend_file_handle* file_handle, int type TSRMLS_DC);
 static zend_op_array* strict_compile_file(zend_file_handle*, int TSRMLS_DC);
@@ -17,10 +16,12 @@ static zend_op_array* strict_compile_file(zend_file_handle*, int TSRMLS_DC);
 static zend_op_array* (*original_compile_string)(zval *source_string, char *filename TSRMLS_DC);
 static zend_op_array* strict_compile_string(zval *source_string, char *filename TSRMLS_DC);
 
-static void (*original_execute)(zend_op_array *op_array TSRMLS_DC);
+
 #if PHP_VERSION_ID >= 50500
+static void (*original_execute)(zend_execute_data *arg TSRMLS_DC);
 static void strict_execute(zend_execute_data *arg TSRMLS_DC);
 #else
+static void (*original_execute)(zend_op_array *op_array TSRMLS_DC);
 static void strict_execute(zend_op_array *arg TSRMLS_DC);
 #endif
 ZEND_DECLARE_MODULE_GLOBALS(strict)
@@ -187,12 +188,18 @@ static int strict_scan_function(zend_op_array* fopa TSRMLS_DC)
 }
 /* }}} */
 
+#if PHP_VERSION_ID >= 50400
+#define CLASS_ENTRY_DOC_COMMENT(ce) ce->info.user.doc_comment
+#else
+#define CLASS_ENTRY_DOC_COMMENT(ce) ce->doc_comment
+#endif
+
 /* {{{ int strict_scan_class
  */
 static int strict_scan_class(zend_class_entry **class_entry TSRMLS_DC)
 {
 	zend_class_entry *ce = *class_entry;
-	if (ce->type == ZEND_USER_CLASS && (!ce->doc_comment || !strstr(ce->doc_comment, NO_STRICT))) {
+	if (ce->type == ZEND_USER_CLASS && (!CLASS_ENTRY_DOC_COMMENT(ce) || !strstr(CLASS_ENTRY_DOC_COMMENT(ce), NO_STRICT))) {
 		zend_hash_apply(&ce->function_table, (apply_func_t) strict_scan_function TSRMLS_CC);
 	}
 	return ZEND_HASH_APPLY_KEEP;
@@ -210,6 +217,10 @@ static zend_op_array *strict_compile_file(zend_file_handle *file_handle, int typ
 	if (STRICT_G(use)) {
 		STRICT_G(filename) = file_handle->filename;
 
+		if (STRICT_G(verbose)) {
+			prepare_source_file();
+		}
+
 		if (op_array) {
 			if (STRICT_G(dump)) {
 				strict_op_dump(op_array);
@@ -220,6 +231,11 @@ static zend_op_array *strict_compile_file(zend_file_handle *file_handle, int typ
 		zend_hash_apply(CG(class_table), (apply_func_t) strict_scan_class TSRMLS_CC);
 
 		STRICT_G(filename) = NULL;
+
+		if (STRICT_G(verbose)) {
+			cleanup_source_file();
+		}
+
 
 		if (STRICT_G(detect)) {
 			zend_bailout();
