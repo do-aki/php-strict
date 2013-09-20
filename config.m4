@@ -13,9 +13,9 @@ dnl [  --with-strict             Include strict support])
 
 dnl Otherwise use enable:
 
-dnl PHP_ARG_ENABLE(strict, whether to enable strict support,
-dnl Make sure that the comment is aligned:
-dnl [  --enable-strict           Enable strict support])
+PHP_ARG_ENABLE(strict, whether to enable strict support,
+Make sure that the comment is aligned:
+[  --enable-strict           Enable strict support])
 
 if test "$PHP_STRICT" != "no"; then
   dnl Write more examples of tests here...
@@ -59,5 +59,5 @@ if test "$PHP_STRICT" != "no"; then
   dnl
   dnl PHP_SUBST(STRICT_SHARED_LIBADD)
 
-  PHP_NEW_EXTENSION(strict, strict.c, $ext_shared)
+  PHP_NEW_EXTENSION(strict, strict.c strict_op.c source_graph.c, $ext_shared)
 fi
