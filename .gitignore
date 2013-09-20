@@ -36,3 +36,5 @@ modules/
 *.lo
 *.la
 
+samples/
+tools/
